@@ -26,7 +26,7 @@
             align-items: center;
         }
         .container {
-            max-width: 650px;
+            max-width: 750px;
             width: 100%;
         }
         h1 {
@@ -58,17 +58,18 @@
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.78rem;
+            font-size: 0.75rem;
             text-align: center;
+            white-space: nowrap;
         }
         th {
             color: #94a3b8;
-            padding: 6px 2px;
+            padding: 6px 4px;
             border-bottom: 1px solid #334155;
             font-weight: 600;
         }
         td {
-            padding: 6px 2px;
+            padding: 6px 4px;
             border-bottom: 1px solid #1e293b;
         }
         .day-header {
@@ -78,7 +79,7 @@
             text-align: left;
             padding: 6px 8px;
         }
-        .tag-top { background-color: var(--green); color: #000; font-weight: bold; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; }
+        .tag-top { background-color: var(--green); color: #000; font-weight: bold; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
         .tag-ok { color: var(--green); font-weight: bold; }
         .tag-warn { color: var(--orange); font-weight: bold; }
         .tag-danger { color: var(--red); font-weight: bold; }
@@ -115,7 +116,7 @@
 
 <div class="container">
     <h1>Pêche Kayak - Pointe du Bile</h1>
-    <p class="subtitle">Assérac (44) — Météo, Marées &amp; Pluie 48h</p>
+    <p class="subtitle">Assérac (44) — Météo, Houle &amp; Marées</p>
 
     <div class="section-title">Créneaux 7 jours (24h/24)</div>
     <div class="forecast-scroll">
@@ -126,23 +127,24 @@
                     <th>Vent</th>
                     <th>Raf.</th>
                     <th>Dir.</th>
-                    <th>Press.</th>
+                    <th>Houle</th>
                     <th>Marée</th>
+                    <th>Coeff.</th>
                     <th>Avis</th>
                 </tr>
             </thead>
             <tbody id="forecast-body">
-                <tr><td colspan="7">Analyse de la pluie (48h) et chargement météo...</td></tr>
+                <tr><td colspan="8">Chargement des données météo et marines...</td></tr>
             </tbody>
         </table>
     </div>
 
     <div class="rules-box">
-        <b>Critères appliqués :</b><br>
-        • <span class="tag-top">TOP PÊCHE</span> : 2h post BM/PM + vent ≤ 14 km/h + rafales ≤ 20 km/h + pas de pluie les 48h précédentes.<br>
-        • <b>Vent &gt; 18 km/h</b> ou <b>Rafales &gt; 25 km/h</b> : <span class="tag-danger">NO-GO</span>.<br>
-        • <b>🌧️ Pluie 48h</b> : Alerte pluie récente (eau trouble / dessalée).<br>
-        • <b>⚠️ Vent d'Est</b> : Vent de terre (dérive au large).
+        <b>Critères d'optimisation appliqués :</b><br>
+        • <span class="tag-top">TOP PÊCHE</span> : 2h post BM/PM + Fenêtre Lever/Coucher du soleil (±1h) + Vent ≤ 18 km/h + Rafales ≤ 25 km/h + Houle ≤ 0.8 m + Coeff [45-90] + Pression favorable (≥ 1013 hPa ou hausse) + Sans pluie (48h).<br>
+        • <b>Sécurité :</b> Vent &gt; 18 km/h, Rafales &gt; 25 km/h ou Houle &gt; 0.8 m = <span class="tag-danger">NO-GO</span>.<br>
+        • <b>📉 Pression basse (&lt; 1010 hPa) :</b> Activité des poissons généralement faible.<br>
+        • <b>🌧️ Pluie 48h :</b> Alerte pluie récente (eau douce / trouble).
     </div>
 
     <button onclick="fetchData()">Actualiser les 7 jours</button>
@@ -152,8 +154,19 @@
     const LAT = 47.433;
     const LON = -2.483;
 
-    const MAX_WIND = 18;  // km/h
-    const MAX_GUSTS = 25; // km/h
+    const MAX_WIND = 18;   // km/h
+    const MAX_GUSTS = 25;  // km/h
+    const MAX_SWELL = 0.8; // mètres
+
+    function getTideCoeff(date) {
+        const refNewMoon = new Date('2026-01-18T18:00:00Z').getTime();
+        const lunarCycle = 29.530588 * 24 * 3600 * 1000;
+        const diff = Math.abs(date.getTime() - refNewMoon) % lunarCycle;
+        
+        const angle = (diff / lunarCycle) * 2 * Math.PI * 2; 
+        const coeff = 67.5 + 47.5 * Math.cos(angle);
+        return Math.round(coeff);
+    }
 
     function getTideState(date) {
         const tideHalfCycle = 6.21 * 3600 * 1000;
@@ -164,27 +177,32 @@
 
         if (remainder < tideHalfCycle) {
             const hoursAfterBM = remainder / (3600 * 1000);
-            return { type: 'Montante', hoursAfter: hoursAfterBM, isOptimal: hoursAfterBM <= 2.0 };
+            return { type: 'Montante', isOptimalWindow: hoursAfterBM <= 2.0 };
         } else {
             const hoursAfterPM = (remainder - tideHalfCycle) / (3600 * 1000);
-            return { type: 'Descendante', hoursAfter: hoursAfterPM, isOptimal: hoursAfterPM <= 2.0 };
+            return { type: 'Descendante', isOptimalWindow: hoursAfterPM <= 2.0 };
         }
     }
 
     async function fetchData() {
         const tbody = document.getElementById('forecast-body');
-        tbody.innerHTML = '<tr><td colspan="7">Chargement des 7 jours...</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8">Chargement des données météo et marines...</td></tr>';
 
         try {
-            // Demande des données prévisionnelles (7 jours) + historique récent (past_days=2 pour vérifier la pluie sur 48h)
-            const url = `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,rain&past_days=2&forecast_days=7&timezone=Europe/Paris`;
-            const res = await fetch(url);
-            const data = await res.json();
+            // Ajout du paramètre daily=sunrise,sunset pour obtenir les heures exactes du soleil
+            const urlMeteo = `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,rain&daily=sunrise,sunset&past_days=2&forecast_days=7&timezone=Europe/Paris`;
+            const urlMarine = `https://marine-api.open-meteo.com/v1/marine?latitude=${LAT}&longitude=${LON}&hourly=wave_height&forecast_days=7&timezone=Europe/Paris`;
 
-            const hourly = data.hourly;
+            const [resMeteo, resMarine] = await Promise.all([fetch(urlMeteo), fetch(urlMarine)]);
+            const dataMeteo = await resMeteo.json();
+            const dataMarine = await resMarine.json();
+
+            const hourly = dataMeteo.hourly;
+            const daily = dataMeteo.daily;
+            const marineHourly = dataMarine.hourly;
+
             tbody.innerHTML = '';
 
-            // Calcul du cumul de pluie sur les 48h passées
             const nowIndex = hourly.time.findIndex(t => new Date(t) >= new Date());
             let rainLast48h = 0;
             if (nowIndex !== -1) {
@@ -193,57 +211,89 @@
                     rainLast48h += hourly.rain[k] || 0;
                 }
             }
-            const hadRecentRain = rainLast48h > 1.0; // Plus de 1mm de pluie accumulée
+            const hadRecentRain = rainLast48h > 1.0;
 
             let currentDay = '';
             const directions = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
-
-            // On ne parcourt que les heures à partir de maintenant (skip le passé)
             const startLoop = nowIndex !== -1 ? nowIndex : 0;
 
             for (let i = startLoop; i < hourly.time.length; i++) {
                 const dateObj = new Date(hourly.time[i]);
                 const hour = dateObj.getHours();
+                const dateISO = hourly.time[i].substring(0, 10);
                 const dayString = dateObj.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+
+                // Récupération lever/coucher pour la journée courante
+                const dailyIndex = daily.time.findIndex(d => d === dateISO);
+                let sunriseDate = null;
+                let sunsetDate = null;
+                let sunNotice = '';
+
+                if (dailyIndex !== -1) {
+                    sunriseDate = new Date(daily.sunrise[dailyIndex]);
+                    sunsetDate = new Date(daily.sunset[dailyIndex]);
+                    const srStr = sunriseDate.toLocaleTimeString('fr-FR', { hour: '2d', minute: '2d' });
+                    const ssStr = sunsetDate.toLocaleTimeString('fr-FR', { hour: '2d', minute: '2d' });
+                    sunNotice = ` — 🌅 ${srStr} | 🌇 ${ssStr}`;
+                }
 
                 if (dayString !== currentDay) {
                     currentDay = dayString;
                     const dayRow = document.createElement('tr');
-                    const rainNotice = (i === startLoop && hadRecentRain) ? ` — ⚠️ Pluie les 48h passées (${rainLast48h.toFixed(1)} mm)` : '';
-                    dayRow.innerHTML = `<td colspan="7" class="day-header">${dayString.toUpperCase()}${rainNotice}</td>`;
+                    const rainNotice = (i === startLoop && hadRecentRain) ? ` — ⚠️ Pluie 48h : ${rainLast48h.toFixed(1)} mm` : '';
+                    dayRow.innerHTML = `<td colspan="8" class="day-header">${dayString.toUpperCase()}${sunNotice}${rainNotice}</td>`;
                     tbody.appendChild(dayRow);
                 }
 
                 const wind = Math.round(hourly.wind_speed_10m[i]);
                 const gusts = Math.round(hourly.wind_gusts_10m[i]);
                 const pressure = Math.round(hourly.pressure_msl[i]);
+                const prevPressure = i > 0 ? Math.round(hourly.pressure_msl[i - 1]) : pressure;
+                
                 const dirDeg = hourly.wind_direction_10m[i];
                 const dirText = directions[Math.round(dirDeg / 45) % 8];
 
+                const waveVal = marineHourly && marineHourly.wave_height[i] !== null ? marineHourly.wave_height[i] : 0;
+                const waveHeightStr = waveVal > 0 ? waveVal.toFixed(1) : '0.0';
+
                 const tide = getTideState(dateObj);
                 const tideLabel = tide.type === 'Montante' ? '↗ Mont.' : '↘ Desc.';
+                const coeff = getTideCoeff(dateObj);
 
-                const isOffshore = dirText.includes('E');
-                const isSafe = wind <= MAX_WIND && gusts <= MAX_GUSTS;
-                const isIdealWind = wind <= 14 && gusts <= 20 && !isOffshore;
+                // Test crépuscule / aube : ±1 heure autour du lever ou du coucher du soleil
+                let isSunOptimal = false;
+                if (sunriseDate && sunsetDate) {
+                    const diffSunriseHours = Math.abs(dateObj.getTime() - sunriseDate.getTime()) / (3600 * 1000);
+                    const diffSunsetHours = Math.abs(dateObj.getTime() - sunsetDate.getTime()) / (3600 * 1000);
+                    isSunOptimal = diffSunriseHours <= 1.2 || diffSunsetHours <= 1.2;
+                }
+
+                // Conditions d'évaluation
+                const isPressureRising = pressure >= prevPressure;
+                const isPressureGood = pressure >= 1013 || isPressureRising;
+                const isPressureLow = pressure < 1010;
+
+                const isCoeffOptimal = coeff >= 45 && coeff <= 90;
+                const isWaveOptimal = waveVal <= MAX_SWELL;
+                const isSafe = wind <= MAX_WIND && gusts <= MAX_GUSTS && isWaveOptimal;
 
                 let statusTag = '';
 
                 if (!isSafe) {
                     statusTag = '<span class="tag-danger">NO-GO</span>';
-                } else if (isIdealWind && tide.isOptimal && !hadRecentRain) {
+                } else if (tide.isOptimalWindow && isSunOptimal && isCoeffOptimal && isPressureGood && !hadRecentRain) {
                     statusTag = '<span class="tag-top">TOP PÊCHE</span>';
-                } else if (isSafe && tide.isOptimal) {
-                    statusTag = '<span class="tag-ok">BON (Marée)</span>';
-                } else if (isSafe) {
+                } else if (tide.isOptimalWindow && isCoeffOptimal) {
+                    statusTag = '<span class="tag-ok">BON</span>';
+                } else {
                     statusTag = '<span class="tag-warn">MOYEN</span>';
                 }
 
                 if (hadRecentRain && isSafe) {
                     statusTag += ' 🌧️';
                 }
-                if (isOffshore && isSafe) {
-                    statusTag += ' ⚠️';
+                if (isPressureLow && isSafe) {
+                    statusTag += ' 📉';
                 }
 
                 const isNight = hour < 7 || hour > 21;
@@ -255,15 +305,16 @@
                     <td>${wind} km/h</td>
                     <td>${gusts} km/h</td>
                     <td>${dirText}</td>
-                    <td>${pressure} hPa</td>
+                    <td>${waveHeightStr} m</td>
                     <td>${tideLabel}</td>
+                    <td>${coeff}</td>
                     <td>${statusTag}</td>
                 `;
                 tbody.appendChild(row);
             }
 
         } catch (e) {
-            tbody.innerHTML = '<tr><td colspan="7">Erreur lors de la récupération des données.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8">Erreur lors de la récupération des données.</td></tr>';
         }
     }
 
