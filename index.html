@@ -141,10 +141,10 @@
 
     <div class="rules-box">
         <b>Critères d'optimisation appliqués :</b><br>
-        • <span class="tag-top">TOP PÊCHE</span> : 2h post BM/PM + Fenêtre Lever/Coucher du soleil (±1h) + Vent ≤ 18 km/h + Rafales ≤ 25 km/h + Houle ≤ 0.8 m + Coeff [45-90] + Pression favorable (≥ 1013 hPa ou hausse) + Sans pluie (48h).<br>
+        • <span class="tag-top">TOP PÊCHE</span> : 2h post BM/PM + Lever/Coucher du soleil (±1h) + Vent ≤ 18 km/h + Rafales ≤ 25 km/h + Houle ≤ 0.8 m + Coeff [45-90] + Pression favorable (≥ 1013 hPa ou hausse) + Sans pluie (48h).<br>
         • <b>Sécurité :</b> Vent &gt; 18 km/h, Rafales &gt; 25 km/h ou Houle &gt; 0.8 m = <span class="tag-danger">NO-GO</span>.<br>
-        • <b>📉 Pression basse (&lt; 1010 hPa) :</b> Activité des poissons généralement faible.<br>
-        • <b>🌧️ Pluie 48h :</b> Alerte pluie récente (eau douce / trouble).
+        • <b>📉 Pression basse (&lt; 1010 hPa) :</b> Activité faible.<br>
+        • <b>🌧️ Pluie 48h :</b> Alerte pluie récente.
     </div>
 
     <button onclick="fetchData()">Actualiser les 7 jours</button>
@@ -159,16 +159,19 @@
     const MAX_SWELL = 0.8; // mètres
 
     function getTideCoeff(date) {
+        if (!(date instanceof Date) || isNaN(date.getTime())) return 70;
         const refNewMoon = new Date('2026-01-18T18:00:00Z').getTime();
         const lunarCycle = 29.530588 * 24 * 3600 * 1000;
         const diff = Math.abs(date.getTime() - refNewMoon) % lunarCycle;
-        
         const angle = (diff / lunarCycle) * 2 * Math.PI * 2; 
         const coeff = 67.5 + 47.5 * Math.cos(angle);
         return Math.round(coeff);
     }
 
     function getTideState(date) {
+        if (!(date instanceof Date) || isNaN(date.getTime())) {
+            return { type: 'Montante', isOptimalWindow: false };
+        }
         const tideHalfCycle = 6.21 * 3600 * 1000;
         const refBM = new Date('2026-01-01T06:00:00Z').getTime();
         
@@ -189,11 +192,18 @@
         tbody.innerHTML = '<tr><td colspan="8">Chargement des données météo et marines...</td></tr>';
 
         try {
-            // Ajout du paramètre daily=sunrise,sunset pour obtenir les heures exactes du soleil
-            const urlMeteo = `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,rain&daily=sunrise,sunset&past_days=2&forecast_days=7&timezone=Europe/Paris`;
-            const urlMarine = `https://marine-api.open-meteo.com/v1/marine?latitude=${LAT}&longitude=${LON}&hourly=wave_height&forecast_days=7&timezone=Europe/Paris`;
+            const urlMeteo = `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,rain&daily=sunrise,sunset&past_days=2&forecast_days=7&timezone=Europe%2FParis`;
+            const urlMarine = `https://marine-api.open-meteo.com/v1/marine?latitude=${LAT}&longitude=${LON}&hourly=wave_height&forecast_days=7&timezone=Europe%2FParis`;
 
-            const [resMeteo, resMarine] = await Promise.all([fetch(urlMeteo), fetch(urlMarine)]);
+            const [resMeteo, resMarine] = await Promise.all([
+                fetch(urlMeteo),
+                fetch(urlMarine)
+            ]);
+
+            if (!resMeteo.ok || !resMarine.ok) {
+                throw new Error("Erreur de réponse API");
+            }
+
             const dataMeteo = await resMeteo.json();
             const dataMarine = await resMarine.json();
 
@@ -203,64 +213,62 @@
 
             tbody.innerHTML = '';
 
-            const nowIndex = hourly.time.findIndex(t => new Date(t) >= new Date());
+            const now = new Date();
+            let nowIndex = hourly.time.findIndex(t => new Date(t) >= now);
+            if (nowIndex === -1) nowIndex = 0;
+
             let rainLast48h = 0;
-            if (nowIndex !== -1) {
-                const startIndex = Math.max(0, nowIndex - 48);
-                for (let k = startIndex; k < nowIndex; k++) {
-                    rainLast48h += hourly.rain[k] || 0;
-                }
+            const startIndex = Math.max(0, nowIndex - 48);
+            for (let k = startIndex; k < nowIndex; k++) {
+                rainLast48h += hourly.rain[k] || 0;
             }
             const hadRecentRain = rainLast48h > 1.0;
 
             let currentDay = '';
             const directions = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
-            const startLoop = nowIndex !== -1 ? nowIndex : 0;
 
-            for (let i = startLoop; i < hourly.time.length; i++) {
+            for (let i = nowIndex; i < hourly.time.length; i++) {
                 const dateObj = new Date(hourly.time[i]);
                 const hour = dateObj.getHours();
                 const dateISO = hourly.time[i].substring(0, 10);
                 const dayString = dateObj.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
 
-                // Récupération lever/coucher pour la journée courante
-                const dailyIndex = daily.time.findIndex(d => d === dateISO);
+                const dailyIndex = daily && daily.time ? daily.time.findIndex(d => d === dateISO) : -1;
                 let sunriseDate = null;
                 let sunsetDate = null;
                 let sunNotice = '';
 
-                if (dailyIndex !== -1) {
+                if (dailyIndex !== -1 && daily.sunrise[dailyIndex] && daily.sunset[dailyIndex]) {
                     sunriseDate = new Date(daily.sunrise[dailyIndex]);
                     sunsetDate = new Date(daily.sunset[dailyIndex]);
-                    const srStr = sunriseDate.toLocaleTimeString('fr-FR', { hour: '2d', minute: '2d' });
-                    const ssStr = sunsetDate.toLocaleTimeString('fr-FR', { hour: '2d', minute: '2d' });
+                    const srStr = sunriseDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+                    const ssStr = sunsetDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
                     sunNotice = ` — 🌅 ${srStr} | 🌇 ${ssStr}`;
                 }
 
                 if (dayString !== currentDay) {
                     currentDay = dayString;
                     const dayRow = document.createElement('tr');
-                    const rainNotice = (i === startLoop && hadRecentRain) ? ` — ⚠️ Pluie 48h : ${rainLast48h.toFixed(1)} mm` : '';
+                    const rainNotice = (i === nowIndex && hadRecentRain) ? ` — ⚠️ Pluie 48h : ${rainLast48h.toFixed(1)} mm` : '';
                     dayRow.innerHTML = `<td colspan="8" class="day-header">${dayString.toUpperCase()}${sunNotice}${rainNotice}</td>`;
                     tbody.appendChild(dayRow);
                 }
 
-                const wind = Math.round(hourly.wind_speed_10m[i]);
-                const gusts = Math.round(hourly.wind_gusts_10m[i]);
-                const pressure = Math.round(hourly.pressure_msl[i]);
-                const prevPressure = i > 0 ? Math.round(hourly.pressure_msl[i - 1]) : pressure;
+                const wind = Math.round(hourly.wind_speed_10m[i] || 0);
+                const gusts = Math.round(hourly.wind_gusts_10m[i] || 0);
+                const pressure = Math.round(hourly.pressure_msl[i] || 1013);
+                const prevPressure = i > 0 ? Math.round(hourly.pressure_msl[i - 1] || pressure) : pressure;
                 
-                const dirDeg = hourly.wind_direction_10m[i];
+                const dirDeg = hourly.wind_direction_10m[i] || 0;
                 const dirText = directions[Math.round(dirDeg / 45) % 8];
 
-                const waveVal = marineHourly && marineHourly.wave_height[i] !== null ? marineHourly.wave_height[i] : 0;
+                const waveVal = marineHourly && marineHourly.wave_height && marineHourly.wave_height[i] !== null ? marineHourly.wave_height[i] : 0;
                 const waveHeightStr = waveVal > 0 ? waveVal.toFixed(1) : '0.0';
 
                 const tide = getTideState(dateObj);
                 const tideLabel = tide.type === 'Montante' ? '↗ Mont.' : '↘ Desc.';
                 const coeff = getTideCoeff(dateObj);
 
-                // Test crépuscule / aube : ±1 heure autour du lever ou du coucher du soleil
                 let isSunOptimal = false;
                 if (sunriseDate && sunsetDate) {
                     const diffSunriseHours = Math.abs(dateObj.getTime() - sunriseDate.getTime()) / (3600 * 1000);
@@ -268,7 +276,6 @@
                     isSunOptimal = diffSunriseHours <= 1.2 || diffSunsetHours <= 1.2;
                 }
 
-                // Conditions d'évaluation
                 const isPressureRising = pressure >= prevPressure;
                 const isPressureGood = pressure >= 1013 || isPressureRising;
                 const isPressureLow = pressure < 1010;
@@ -314,7 +321,8 @@
             }
 
         } catch (e) {
-            tbody.innerHTML = '<tr><td colspan="8">Erreur lors de la récupération des données.</td></tr>';
+            console.error(e);
+            tbody.innerHTML = '<tr><td colspan="8">Erreur de chargement des données. Vérifie ta connexion internet.</td></tr>';
         }
     }
 
